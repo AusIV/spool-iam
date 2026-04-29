@@ -7,8 +7,6 @@ from .exceptions import MissingContextValue, PermissionDenied
 from .models import AuditLog, Policy, Principal
 
 
-REQUEST_POLICY_CACHE_ATTR = "_django_iam_cumulative_policy"
-REQUEST_PRINCIPAL_CACHE_ATTR = "_django_iam_principal"
 RESOURCE_TEMPLATE_RE = re.compile(r"{(?P<key>[A-Za-z_][A-Za-z0-9_]*)}")
 
 
@@ -92,8 +90,10 @@ def enforce(request, resource, action, context=None):
 
 
 def get_principal(request):
-    if hasattr(request, REQUEST_PRINCIPAL_CACHE_ATTR):
-        return getattr(request, REQUEST_PRINCIPAL_CACHE_ATTR)
+    try:
+        return request._django_iam_principal
+    except AttributeError:
+        pass
 
     user = getattr(request, "user", None)
     if not user or isinstance(user, AnonymousUser) or not user.is_authenticated:
@@ -105,13 +105,15 @@ def get_principal(request):
             .first()
         )
 
-    setattr(request, REQUEST_PRINCIPAL_CACHE_ATTR, principal)
+    request._django_iam_principal = principal
     return principal
 
 
 def get_cumulative_policy(request):
-    if hasattr(request, REQUEST_POLICY_CACHE_ATTR):
-        return getattr(request, REQUEST_POLICY_CACHE_ATTR)
+    try:
+        return request._django_iam_cumulative_policy
+    except AttributeError:
+        pass
 
     principal = get_principal(request)
     statements = []
@@ -128,7 +130,7 @@ def get_cumulative_policy(request):
         "Version": "0",
         "Statements": statements,
     }
-    setattr(request, REQUEST_POLICY_CACHE_ATTR, cumulative_policy)
+    request._django_iam_cumulative_policy = cumulative_policy
     return cumulative_policy
 
 
