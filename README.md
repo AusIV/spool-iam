@@ -1,6 +1,6 @@
-# django-iam
+# django-ltl-authorization
 
-A Django application for AWS IAM-style policy enforcement.
+A Django application for LTL authorization with AWS IAM-style policy enforcement.
 
 Add the app to `INSTALLED_APPS`:
 
