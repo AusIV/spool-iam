@@ -35,3 +35,27 @@ enforce(
 `enforce()` returns `True` when authorized. It raises `django_iam.exceptions.PermissionDenied` if no matching allow exists or if any explicit deny matches. It raises `django_iam.exceptions.MissingContextValue` when a matching action statement has a `Resource` template like `{principalName}` and that value is not supplied in `context`.
 
 Every call writes an `AuditLog` row. The cumulative policy for the request principal is cached on the request object for the life of the request.
+
+## Audit Log Export
+
+Export unexported audit logs to a newline-delimited JSON file:
+
+```bash
+python manage.py export_audit_logs /secure/backups/iam-audit-logs.jsonl
+```
+
+The command writes unexported records to the file, then marks those records with
+`exported_at` and `export_path`.
+
+After confirming the exported file has been securely backed up, delete only
+previously exported records:
+
+```bash
+python manage.py delete_exported_audit_logs
+```
+
+Preview the deletion count without deleting records:
+
+```bash
+python manage.py delete_exported_audit_logs --dry-run
+```

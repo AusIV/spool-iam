@@ -36,8 +36,16 @@ class PrincipalAdmin(admin.ModelAdmin):
 
 @admin.register(AuditLog)
 class AuditLogAdmin(admin.ModelAdmin):
-    list_display = ("created_at", "principal", "action", "resource", "allowed", "reason")
-    list_filter = ("allowed", "reason", "created_at")
+    list_display = (
+        "created_at",
+        "principal",
+        "action",
+        "resource",
+        "allowed",
+        "reason",
+        "exported_at",
+    )
+    list_filter = ("allowed", "reason", "exported_at", "created_at")
     search_fields = ("principal__name", "user__username", "action", "resource")
     readonly_fields = (
         "principal",
@@ -49,6 +57,8 @@ class AuditLogAdmin(admin.ModelAdmin):
         "reason",
         "matched_statements",
         "created_at",
+        "exported_at",
+        "export_path",
     )
 
     def has_add_permission(self, request):

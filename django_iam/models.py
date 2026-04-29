@@ -134,6 +134,8 @@ class AuditLog(models.Model):
     reason = models.TextField(blank=True)
     matched_statements = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    exported_at = models.DateTimeField(null=True, blank=True)
+    export_path = models.CharField(max_length=1024, blank=True)
 
     class Meta:
         ordering = ["-created_at"]
