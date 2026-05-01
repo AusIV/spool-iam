@@ -103,6 +103,65 @@ Each check may use `object` or `resource`, plus `action` and optional `context`.
 The endpoint also accepts `"token": "<jwt>"` in the JSON body when using an
 Authorization header is inconvenient.
 
+## Client Application
+
+Applications that use the central IAM service can install the lightweight client
+app and middleware instead of embedding the IAM database models.
+
+```python
+INSTALLED_APPS = [
+    # ...
+    "django_iam_client",
+]
+
+MIDDLEWARE = [
+    # Authentication middleware should run before IAMEnforcementMiddleware.
+    # ...
+    "django_iam_client.middleware.IAMEnforcementMiddleware",
+]
+
+IAM_CLIENT_BASE_URL = "http://127.0.0.1:8000"
+```
+
+The middleware adds `request.enforce` for the lifetime of the request:
+
+```python
+def view(request):
+    request.enforce.read(
+        "comment:ProjectA:IssueB:UserC:0",
+        "comment:View",
+        {"principalName": "UserC"},
+    )
+
+    request.enforce.write(
+        "comment:ProjectA:IssueB:UserC:1",
+        "comment:Create",
+        {"principalName": "UserC"},
+    )
+```
+
+`read()` records the read operation and immediately verifies that operation with
+the IAM service. `write()` records the write operation and verifies every
+operation accumulated so far in a single batch call. When the response leaves the
+middleware, any operations accumulated up to that point are verified again.
+
+By default, the client forwards the incoming `Authorization: Bearer <jwt>` token
+to the IAM service. Applications can set `request.iam_session_token` before
+calling enforcement, or configure `IAM_CLIENT_SESSION_TOKEN_GETTER` with a dotted
+function path that accepts `request` and returns the token. Use
+`IAM_CLIENT_ENFORCE_URL` to point directly at the batch endpoint, or
+`IAM_CLIENT_BASE_URL` to derive `/api/enforce/`.
+
+If any enforcement fails, the middleware returns HTTP 403 with only the failed
+action names:
+
+```json
+{
+  "error": "permission_denied",
+  "failed_actions": ["comment:Create"]
+}
+```
+
 ## IAM Data
 
 Credential management uses Django's built-in user model. Authorization uses IAM
