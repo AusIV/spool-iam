@@ -7,13 +7,13 @@ name = "django-ltl-authorization"
 version = "0.1.0"
 description = "A Django app for authorization with AWS IAM-style policy enforcement."
 requires-python = ">=3.10"
-dependencies = ["Django>=4.2"]
+dependencies = ["Django>=4.2", "PyJWT[crypto]>=2.7"]
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-django>=4.8"]
 
 [tool.setuptools.packages.find]
-include = ["django_iam*"]
+include = ["django_iam*", "iam_service*"]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
