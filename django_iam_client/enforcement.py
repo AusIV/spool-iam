@@ -37,6 +37,9 @@ class RequestEnforcement:
         self._verify(self.operations)
         return True
 
+    def batch(self):
+        return EnforcementBatch(self.request, client=self.client)
+
     @property
     def reads(self):
         return [operation for operation in self.operations if operation.mode == "read"]
@@ -56,18 +59,62 @@ class RequestEnforcement:
         return operation
 
     def _verify(self, operations):
-        token = get_session_token(self.request)
-        if not token:
-            raise MissingSessionToken("A bearer session token is required.")
-
-        results = self.client.enforce(token, operations)
-        failed_actions = [
-            operation.action
-            for operation, result in zip(operations, results)
-            if not result.get("allowed")
-        ]
+        results = execute_operations(self.request, self.client, operations)
+        failed_actions = failed_operation_actions(operations, results)
         if failed_actions:
             raise EnforcementDenied(failed_actions)
+
+
+class EnforcementBatch:
+    def __init__(self, request, client=None):
+        self.request = request
+        self.client = client or make_client()
+        self.operations = []
+
+    def read(self, object, action, context=None):
+        self._append("read", object, action, context)
+        return self
+
+    def write(self, object, action, context=None):
+        self._append("write", object, action, context)
+        return self
+
+    def execute(self):
+        if not self.operations:
+            return []
+        return execute_operations(self.request, self.client, self.operations)
+
+    def verify(self):
+        results = self.execute()
+        failed_actions = failed_operation_actions(self.operations, results)
+        if failed_actions:
+            raise EnforcementDenied(failed_actions)
+        return True
+
+    def _append(self, mode, resource, action, context):
+        operation = EnforcementOperation(
+            mode=mode,
+            resource=resource,
+            action=action,
+            context=context or {},
+        )
+        self.operations.append(operation)
+        return operation
+
+
+def execute_operations(request, client, operations):
+    token = get_session_token(request)
+    if not token:
+        raise MissingSessionToken("A bearer session token is required.")
+    return client.enforce(token, operations)
+
+
+def failed_operation_actions(operations, results):
+    return [
+        operation.action
+        for operation, result in zip(operations, results)
+        if not result.get("allowed")
+    ]
 
 
 def get_session_token(request):

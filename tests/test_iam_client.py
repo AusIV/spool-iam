@@ -100,6 +100,60 @@ class IAMClientTests(TestCase):
         assert exc.exception.failed_actions == ["document:View"]
         assert "private-object-id" not in str(exc.exception)
 
+    def test_user_batch_executes_independently_and_returns_ordered_results(self):
+        request = self._request()
+        request.enforce = RequestEnforcement(request, client=FakeIAMClient())
+        FAKE_RESULTS.append(
+            [
+                {"allowed": True, "reason": "allowed"},
+                {"allowed": False, "reason": "missing_allow"},
+            ]
+        )
+
+        batch = request.enforce.batch()
+        assert batch.read("issue:ProjectA:IssueA", "issue:View") is batch
+        assert batch.read("issue:ProjectA:IssueB", "issue:View") is batch
+
+        results = batch.execute()
+
+        assert results == [
+            {"allowed": True, "reason": "allowed"},
+            {"allowed": False, "reason": "missing_allow"},
+        ]
+        assert request.enforce.operations == []
+        assert FAKE_CALLS == [
+            {
+                "token": "session-token",
+                "operations": [
+                    {
+                        "mode": "read",
+                        "object": "issue:ProjectA:IssueA",
+                        "action": "issue:View",
+                        "context": {},
+                    },
+                    {
+                        "mode": "read",
+                        "object": "issue:ProjectA:IssueB",
+                        "action": "issue:View",
+                        "context": {},
+                    },
+                ],
+            }
+        ]
+
+    def test_user_batch_verify_raises_for_denied_results(self):
+        request = self._request()
+        request.enforce = RequestEnforcement(request, client=FakeIAMClient())
+        FAKE_RESULTS.append([{"allowed": False, "reason": "missing_allow"}])
+
+        batch = request.enforce.batch()
+        batch.write("comment:ProjectA:IssueB:UserC:0", "comment:Create")
+
+        with self.assertRaises(EnforcementDenied) as exc:
+            batch.verify()
+
+        assert exc.exception.failed_actions == ["comment:Create"]
+
     @override_settings(IAM_CLIENT_CLASS="tests.test_iam_client.FakeIAMClient")
     def test_middleware_exit_verifies_accumulated_operations(self):
         def view(request):
@@ -137,3 +191,28 @@ class IAMClientTests(TestCase):
             "error": "permission_denied",
             "failed_actions": ["document:View"],
         }
+
+    @override_settings(IAM_CLIENT_CLASS="tests.test_iam_client.FakeIAMClient")
+    def test_middleware_does_not_reverify_user_batch_operations(self):
+        FAKE_RESULTS.append(
+            [
+                {"allowed": True, "reason": "allowed"},
+                {"allowed": False, "reason": "missing_allow"},
+            ]
+        )
+
+        def view(request):
+            batch = request.enforce.batch()
+            batch.read("issue:ProjectA:IssueA", "issue:View")
+            batch.read("issue:ProjectA:IssueB", "issue:View")
+            results = batch.execute()
+            return JsonResponse({"visible": [result["allowed"] for result in results]})
+
+        request = self._request()
+        response = IAMEnforcementMiddleware(view)(request)
+
+        assert response.status_code == 200
+        assert json.loads(response.content.decode("utf-8")) == {
+            "visible": [True, False],
+        }
+        assert len(FAKE_CALLS) == 1

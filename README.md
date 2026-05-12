@@ -145,6 +145,28 @@ the IAM service. `write()` records the write operation and verifies every
 operation accumulated so far in a single batch call. When the response leaves the
 middleware, any operations accumulated up to that point are verified again.
 
+Applications can also start their own batch when they need ordered decisions
+without adding those checks to request-level enforcement. This is useful for
+building lists from objects the user may or may not be allowed to see:
+
+```python
+def visible_issues(request, issues):
+    batch = request.enforce.batch()
+    for issue in issues:
+        batch.read(issue.iam_resource, "issue:View")
+
+    results = batch.execute()
+    return [
+        issue
+        for issue, result in zip(issues, results)
+        if result["allowed"]
+    ]
+```
+
+`batch.execute()` returns the IAM service results in request order and does not
+raise when individual checks are denied. Use `batch.verify()` instead when the
+whole batch must be allowed; denied checks raise `EnforcementDenied`.
+
 By default, the client forwards the incoming `Authorization: Bearer <jwt>` token
 to the IAM service. Applications can set `request.iam_session_token` before
 calling enforcement, or configure `IAM_CLIENT_SESSION_TOKEN_GETTER` with a dotted
