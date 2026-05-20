@@ -226,6 +226,55 @@ class ManagementApiTests(TestCase):
         assert not Principal.objects.filter(principal_type="user", name="UserC").exists()
         assert get_user_model().objects.filter(username=user.username).exists()
 
+    def test_service_principal_crud_without_user(self):
+        create_response = self.client.post(
+            "/api/iam/principals/",
+            {"principal_type": "service", "name": "report-worker"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token}",
+        )
+        assert create_response.status_code == 201
+        assert create_response.json()["principal"]["user"] is None
+
+        principal = Principal.objects.get(
+            principal_type=Principal.SERVICE,
+            name="report-worker",
+        )
+        assert principal.user is None
+
+        get_response = self.client.get(
+            "/api/iam/principals/service/report-worker/",
+            HTTP_AUTHORIZATION=f"Bearer {self.token}",
+        )
+        assert get_response.status_code == 200
+        assert get_response.json()["principal"]["user"] is None
+
+        update_response = self.client.patch(
+            "/api/iam/principals/service/report-worker/",
+            {},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token}",
+        )
+        assert update_response.status_code == 200
+        assert update_response.json()["principal"]["user"] is None
+
+    def test_service_principal_rejects_user_linkage(self):
+        user = get_user_model().objects.create_user(username="ServiceUser")
+
+        create_response = self.client.post(
+            "/api/iam/principals/",
+            {
+                "principal_type": "service",
+                "name": "report-worker",
+                "user_id": user.pk,
+            },
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {self.token}",
+        )
+
+        assert create_response.status_code == 400
+        assert create_response.json()["error"] == "invalid_principal"
+
     def test_role_crud(self):
         create_response = self.client.post(
             "/api/iam/roles/",

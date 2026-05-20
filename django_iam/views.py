@@ -66,8 +66,8 @@ def assume_role_session(request):
 
     principal_type = data.get("principal_type", Principal.USER)
     name = data.get("name")
-    if principal_type != Principal.USER:
-        return _error("invalid_principal", "Only user principals are supported.", status=400)
+    if principal_type not in {Principal.USER, Principal.SERVICE}:
+        return _error("invalid_principal", "Unsupported principal type.", status=400)
     if not isinstance(name, str) or not name:
         return _error("invalid_principal", "name must be a non-empty string.", status=400)
 
@@ -95,11 +95,14 @@ def assume_role_session(request):
         .filter(
             principal_type=principal_type,
             name=name,
-            user__is_active=True,
         )
         .first()
     )
     if principal is None:
+        return _error("not_found", "Principal does not exist.", status=404)
+    if principal.principal_type == Principal.USER and (
+        principal.user is None or not principal.user.is_active
+    ):
         return _error("not_found", "Principal does not exist.", status=404)
 
     actor_principal = get_principal(auth_request)
@@ -274,8 +277,8 @@ def manage_principals(request):
 
     principal_type = data.get("principal_type", Principal.USER)
     name = data.get("name")
-    if principal_type != Principal.USER:
-        return _error("invalid_principal", "Only user principals are supported.", status=400)
+    if principal_type not in {Principal.USER, Principal.SERVICE}:
+        return _error("invalid_principal", "Unsupported principal type.", status=400)
     if not isinstance(name, str) or not name:
         return _error("invalid_principal", "name must be a non-empty string.", status=400)
 
@@ -285,7 +288,7 @@ def manage_principals(request):
     if response is not None:
         return response
 
-    user = _get_principal_user(data, default_username=name)
+    user = _get_principal_user_for_type(data, principal_type, default_username=name)
     if isinstance(user, JsonResponse):
         return user
 
@@ -344,7 +347,7 @@ def manage_principal(request, principal_type, name):
     if data.get("name", name) != name:
         return _error("invalid_principal", "name cannot be changed.", status=400)
 
-    user = _get_principal_user(data, default_username=name)
+    user = _get_principal_user_for_type(data, principal_type, default_username=name)
     if isinstance(user, JsonResponse):
         return user
     principal.user = user
@@ -678,25 +681,27 @@ def _auth_request_from_token(token, allow_assumed=True):
             ),
         )
 
-    user = get_user_model().objects.filter(pk=payload["sub"], is_active=True).first()
-    if user is None:
-        return None, payload, _error(
-            "invalid_token", "Token subject is not an active user.", status=401
-        )
+    if token_type == "session":
+        user = get_user_model().objects.filter(pk=payload["sub"], is_active=True).first()
+        if user is None:
+            return None, payload, _error(
+                "invalid_token", "Token subject is not an active user.", status=401
+            )
+        return SimpleNamespace(user=user), payload, None
 
-    auth_request = SimpleNamespace(user=user)
     if token_type == "assumed_session":
         principal_claim = payload.get("principal")
         actor_claim = payload.get("actor")
         if not isinstance(principal_claim, dict) or not isinstance(actor_claim, dict):
             return None, payload, _error("invalid_token", "Invalid assumed token.", status=401)
 
+        principal_id = principal_claim.get("id")
         principal = (
             Principal.objects.select_related("user")
             .filter(
+                pk=principal_id,
                 principal_type=principal_claim.get("type"),
                 name=principal_claim.get("name"),
-                user=user,
             )
             .first()
         )
@@ -719,12 +724,18 @@ def _auth_request_from_token(token, allow_assumed=True):
 
         if principal is None or actor_user is None or actor_principal is None:
             return None, payload, _error("invalid_token", "Invalid assumed token.", status=401)
+        if principal.principal_type == Principal.USER and (
+            principal.user is None or not principal.user.is_active
+        ):
+            return None, payload, _error("invalid_token", "Invalid assumed token.", status=401)
 
+        auth_request = SimpleNamespace(user=principal.user)
         auth_request._django_iam_principal = principal
         auth_request.iam_actor_user = actor_user
         auth_request.iam_actor_principal = actor_principal
+        return auth_request, payload, None
 
-    return auth_request, payload, None
+    return None, payload, _error("invalid_token", "Invalid session token type.", status=401)
 
 
 def _authorize_management(auth_request, action, resource):
@@ -739,10 +750,12 @@ def _authorize_management(auth_request, action, resource):
 
 def _management_context(auth_request):
     user = auth_request.user
+    principal = get_principal(auth_request)
+    principal_name = principal.name if principal else ""
     return {
-        "principalName": user.username,
-        "username": user.username,
-        "userId": str(user.pk),
+        "principalName": principal_name,
+        "username": user.username if user else "",
+        "userId": str(user.pk) if user else "",
     }
 
 
@@ -836,6 +849,22 @@ def _get_principal_user(data, default_username):
     if user is None:
         return _error("not_found", "Linked user does not exist.", status=404)
     return user
+
+
+def _get_principal_user_for_type(data, principal_type, default_username):
+    if principal_type == Principal.SERVICE:
+        if "user_id" in data or "username" in data:
+            return _error(
+                "invalid_principal",
+                "Service principals cannot be linked to a user.",
+                status=400,
+            )
+        return None
+
+    if principal_type == Principal.USER:
+        return _get_principal_user(data, default_username=default_username)
+
+    return _error("invalid_principal", "Unsupported principal type.", status=400)
 
 
 def _validate_policy_payload(data):

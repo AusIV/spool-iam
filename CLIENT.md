@@ -83,6 +83,9 @@ def assume_user(request, username):
 
 The caller's session token must be allowed to perform `iam:AssumeRole` on the
 target principal resource, such as `iam:principal:user:UserB`.
+To retrieve a token for an account-less service principal, pass `"service"` as
+the principal type and authorize the caller for a resource such as
+`iam:principal:service:report-worker`.
 
 Code that runs outside a middleware-managed request can use
 `IAMServiceClient().assume_role(token, "user", username, duration_seconds=900)`

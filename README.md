@@ -163,6 +163,19 @@ resource, for example `iam:principal:user:UserB`. Assumed-role tokens use
 actor claims identifying the original caller. Assumed tokens cannot be used to
 assume another principal.
 
+Service principals can also be assumed without a corresponding Django user:
+
+```bash
+curl -s http://127.0.0.1:8000/api/session/assume-role/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <jwt>" \
+  -d '{"principal_type":"service","name":"report-worker","duration_seconds":900}'
+```
+
+For assumed-role tokens, `sub` is the stable target principal subject
+`principal:<id>`. Normal authenticated user session tokens continue to use the
+Django user id as `sub`.
+
 The response contains:
 
 ```json
@@ -225,8 +238,9 @@ models:
 
 1. Create Django users.
 2. Create matching `Principal` rows for users.
-3. Assign principals to `Role` rows through `PrincipalRole`.
-4. Attach JSON `Policy` rows to roles through `RolePolicy`.
+3. Create `service` principals for account-less service identities when needed.
+4. Assign principals to `Role` rows through `PrincipalRole`.
+5. Attach JSON `Policy` rows to roles through `RolePolicy`.
 
 Example policy document:
 

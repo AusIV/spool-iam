@@ -16,15 +16,13 @@ class TokenError(Exception):
 
 
 def issue_session_token(user):
-    return _issue_token(user, token_type="session")
+    return _issue_token(str(user.pk), token_type="session")
 
 
 def issue_assumed_session_token(actor_user, actor_principal, target_principal, duration_seconds):
-    if target_principal.user_id is None:
-        raise ValueError("Target principal must be linked to an active user.")
-
     claims = {
         "principal": {
+            "id": target_principal.pk,
             "type": target_principal.principal_type,
             "name": target_principal.name,
         },
@@ -35,19 +33,19 @@ def issue_assumed_session_token(actor_user, actor_principal, target_principal, d
         },
     }
     return _issue_token(
-        target_principal.user,
+        f"principal:{target_principal.pk}",
         token_type="assumed_session",
         ttl_seconds=duration_seconds,
         extra_claims=claims,
     )
 
 
-def _issue_token(user, token_type, ttl_seconds=None, extra_claims=None):
+def _issue_token(subject, token_type, ttl_seconds=None, extra_claims=None):
     now = timezone.now()
     expires_at = now + timedelta(seconds=ttl_seconds or _get_token_ttl_seconds())
     payload = {
         "iss": _get_issuer(),
-        "sub": str(user.pk),
+        "sub": str(subject),
         "iat": int(now.timestamp()),
         "exp": int(expires_at.timestamp()),
         "typ": token_type,

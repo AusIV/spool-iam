@@ -42,9 +42,11 @@ class Role(models.Model):
 
 class Principal(models.Model):
     USER = "user"
+    SERVICE = "service"
 
     PRINCIPAL_TYPE_CHOICES = [
         (USER, "User"),
+        (SERVICE, "Service"),
     ]
 
     principal_type = models.CharField(

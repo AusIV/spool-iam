@@ -208,8 +208,12 @@ class ServiceApiTests(TestCase):
             options={"verify_aud": False},
         )
         assert payload["typ"] == "assumed_session"
-        assert payload["sub"] == str(target_user.pk)
-        assert payload["principal"] == {"type": "user", "name": "Target"}
+        assert payload["sub"] == f"principal:{target_principal.pk}"
+        assert payload["principal"] == {
+            "id": target_principal.pk,
+            "type": "user",
+            "name": "Target",
+        }
         assert payload["actor"]["sub"] == str(self.user.pk)
 
         enforce_response = self.client.post(
@@ -240,6 +244,91 @@ class ServiceApiTests(TestCase):
         assumed_audit = AuditLog.objects.filter(action="document:View").get()
         assert assumed_audit.principal == target_principal
         assert assumed_audit.user == target_user
+        assert assumed_audit.actor_principal == self.principal
+        assert assumed_audit.actor_user == self.user
+
+    def test_assume_role_issues_token_for_service_principal(self):
+        service_principal = Principal.objects.create(
+            principal_type=Principal.SERVICE,
+            name="ReportWorker",
+        )
+        service_role = Role.objects.create(name="report-worker")
+        service_policy = Policy.objects.create(
+            name="report-worker",
+            document={
+                "Version": "0",
+                "Statements": [
+                    {
+                        "Actions": ["report:Run"],
+                        "Effect": "Allow",
+                        "Resource": "report:Daily",
+                    }
+                ],
+            },
+        )
+        RolePolicy.objects.create(role=service_role, policy=service_policy)
+        PrincipalRole.objects.create(principal=service_principal, role=service_role)
+        assume_role = Role.objects.create(name="service-assumer")
+        assume_policy = Policy.objects.create(
+            name="service-assumer",
+            document={
+                "Version": "0",
+                "Statements": [
+                    {
+                        "Actions": ["iam:AssumeRole"],
+                        "Effect": "Allow",
+                        "Resource": "iam:principal:service:ReportWorker",
+                    }
+                ],
+            },
+        )
+        RolePolicy.objects.create(role=assume_role, policy=assume_policy)
+        PrincipalRole.objects.create(principal=self.principal, role=assume_role)
+        token = self.client.post(
+            "/api/session/authenticate/",
+            {"username": "UserC", "password": "password"},
+            content_type="application/json",
+        ).json()["token"]
+
+        response = self.client.post(
+            "/api/session/assume-role/",
+            {"principal_type": "service", "name": "ReportWorker"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["principal"]["principal_type"] == "service"
+        payload = jwt.decode(
+            body["token"],
+            settings.IAM_JWT_PUBLIC_KEY,
+            algorithms=["RS256"],
+            issuer="django-iam",
+            options={"verify_aud": False},
+        )
+        assert payload["typ"] == "assumed_session"
+        assert payload["sub"] == f"principal:{service_principal.pk}"
+        assert payload["principal"] == {
+            "id": service_principal.pk,
+            "type": "service",
+            "name": "ReportWorker",
+        }
+
+        enforce_response = self.client.post(
+            "/api/enforce/",
+            {"checks": [{"object": "report:Daily", "action": "report:Run"}]},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {body['token']}",
+        )
+
+        assert enforce_response.status_code == 200
+        assert enforce_response.json()["results"] == [
+            {"allowed": True, "reason": "allowed"}
+        ]
+        assumed_audit = AuditLog.objects.filter(action="report:Run").get()
+        assert assumed_audit.principal == service_principal
+        assert assumed_audit.user is None
         assert assumed_audit.actor_principal == self.principal
         assert assumed_audit.actor_user == self.user
 
