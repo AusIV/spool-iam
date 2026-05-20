@@ -1,15 +1,20 @@
 import json
+import urllib.error
+from unittest.mock import patch
 
+from django.core.exceptions import ImproperlyConfigured
 from django.http import JsonResponse
 from django.test import RequestFactory, TestCase, override_settings
 
+from django_iam_client.client import IAMServiceClient
 from django_iam_client.enforcement import RequestEnforcement
-from django_iam_client.exceptions import EnforcementDenied
+from django_iam_client.exceptions import EnforcementDenied, IAMServiceError
 from django_iam_client.middleware import IAMEnforcementMiddleware
 
 
 FAKE_CALLS = []
 FAKE_RESULTS = []
+URLLIB_CALLS = []
 
 
 class FakeIAMClient:
@@ -32,11 +37,42 @@ class FakeIAMClient:
             return FAKE_RESULTS.pop(0)
         return [{"allowed": True} for _ in operations]
 
+    def assume_role(self, token, principal_type, name, duration_seconds=None):
+        FAKE_CALLS.append(
+            {
+                "token": token,
+                "principal_type": principal_type,
+                "name": name,
+                "duration_seconds": duration_seconds,
+            }
+        )
+        return {
+            "token": "assumed-token",
+            "token_type": "Bearer",
+            "expires_in": duration_seconds,
+            "principal": {"principal_type": principal_type, "name": name},
+        }
+
+
+class FakeHTTPResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return self.payload
+
 
 class IAMClientTests(TestCase):
     def setUp(self):
         FAKE_CALLS.clear()
         FAKE_RESULTS.clear()
+        URLLIB_CALLS.clear()
         self.factory = RequestFactory()
 
     def _request(self):
@@ -154,6 +190,24 @@ class IAMClientTests(TestCase):
 
         assert exc.exception.failed_actions == ["comment:Create"]
 
+    def test_request_enforcement_assume_role_returns_assumed_token_payload(self):
+        request = self._request()
+        request.enforce = RequestEnforcement(request, client=FakeIAMClient())
+
+        payload = request.enforce.assume_role("user", "Target", duration_seconds=900)
+
+        assert payload["token"] == "assumed-token"
+        assert payload["principal"] == {"principal_type": "user", "name": "Target"}
+        assert request.enforce.operations == []
+        assert FAKE_CALLS == [
+            {
+                "token": "session-token",
+                "principal_type": "user",
+                "name": "Target",
+                "duration_seconds": 900,
+            }
+        ]
+
     @override_settings(IAM_CLIENT_CLASS="tests.test_iam_client.FakeIAMClient")
     def test_middleware_exit_verifies_accumulated_operations(self):
         def view(request):
@@ -216,3 +270,128 @@ class IAMClientTests(TestCase):
             "visible": [True, False],
         }
         assert len(FAKE_CALLS) == 1
+
+    @override_settings(IAM_CLIENT_BASE_URL="https://iam.example.com")
+    def test_client_derives_assume_role_url_from_base_url(self):
+        client = IAMServiceClient()
+
+        assert client.enforce_url == "https://iam.example.com/api/enforce/"
+        assert client.assume_role_url == "https://iam.example.com/api/session/assume-role/"
+
+    @override_settings(
+        IAM_CLIENT_BASE_URL="https://iam.example.com",
+        IAM_CLIENT_ASSUME_ROLE_URL="https://iam.internal/assume/",
+    )
+    def test_client_allows_explicit_assume_role_url(self):
+        client = IAMServiceClient()
+
+        assert client.assume_role_url == "https://iam.internal/assume/"
+
+    @override_settings(
+        IAM_CLIENT_ENFORCE_URL="",
+        IAM_CLIENT_ASSUME_ROLE_URL="https://iam.example.com/api/session/assume-role/",
+    )
+    def test_client_can_be_configured_for_assume_role_only(self):
+        client = IAMServiceClient()
+
+        with self.assertRaises(ImproperlyConfigured):
+            client.enforce("session-token", [])
+
+    def test_assume_role_posts_target_principal_and_returns_token_payload(self):
+        response_payload = {
+            "token": "assumed-token",
+            "token_type": "Bearer",
+            "expires_in": 900,
+            "principal": {"principal_type": "user", "name": "Target"},
+            "actor": {"principal_type": "user", "name": "Actor"},
+        }
+
+        def fake_urlopen(request, timeout):
+            URLLIB_CALLS.append(
+                {
+                    "url": request.full_url,
+                    "method": request.get_method(),
+                    "headers": dict(request.header_items()),
+                    "body": json.loads(request.data.decode("utf-8")),
+                    "timeout": timeout,
+                }
+            )
+            return FakeHTTPResponse(json.dumps(response_payload).encode("utf-8"))
+
+        client = IAMServiceClient(
+            assume_role_url="https://iam.example.com/api/session/assume-role/",
+            timeout=7,
+        )
+        with patch("urllib.request.urlopen", fake_urlopen):
+            payload = client.assume_role(
+                "session-token",
+                "user",
+                "Target",
+                duration_seconds=900,
+            )
+
+        assert payload == response_payload
+        assert URLLIB_CALLS == [
+            {
+                "url": "https://iam.example.com/api/session/assume-role/",
+                "method": "POST",
+                "headers": {
+                    "Authorization": "Bearer session-token",
+                    "Content-type": "application/json",
+                    "Accept": "application/json",
+                },
+                "body": {
+                    "principal_type": "user",
+                    "name": "Target",
+                    "duration_seconds": 900,
+                },
+                "timeout": 7,
+            }
+        ]
+
+    def test_assume_role_omits_duration_when_not_supplied(self):
+        def fake_urlopen(request, timeout):
+            URLLIB_CALLS.append(json.loads(request.data.decode("utf-8")))
+            return FakeHTTPResponse(
+                json.dumps({"token": "assumed-token", "token_type": "Bearer"}).encode(
+                    "utf-8"
+                )
+            )
+
+        client = IAMServiceClient(
+            assume_role_url="https://iam.example.com/api/session/assume-role/"
+        )
+        with patch("urllib.request.urlopen", fake_urlopen):
+            client.assume_role("session-token", "user", "Target")
+
+        assert URLLIB_CALLS == [{"principal_type": "user", "name": "Target"}]
+
+    def test_assume_role_rejects_malformed_response(self):
+        def fake_urlopen(request, timeout):
+            return FakeHTTPResponse(json.dumps({"token_type": "Bearer"}).encode("utf-8"))
+
+        client = IAMServiceClient(
+            assume_role_url="https://iam.example.com/api/session/assume-role/"
+        )
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            with self.assertRaises(IAMServiceError):
+                client.assume_role("session-token", "user", "Target")
+
+    def test_assume_role_translates_http_errors(self):
+        def fake_urlopen(request, timeout):
+            raise urllib.error.HTTPError(
+                request.full_url,
+                403,
+                "Forbidden",
+                hdrs=None,
+                fp=None,
+            )
+
+        client = IAMServiceClient(
+            assume_role_url="https://iam.example.com/api/session/assume-role/"
+        )
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            with self.assertRaises(IAMServiceError):
+                client.assume_role("session-token", "user", "Target")

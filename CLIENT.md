@@ -40,6 +40,7 @@ Optional client settings:
 | --- | --- | --- |
 | `IAM_CLIENT_BASE_URL` | unset | Base IAM service URL. The client derives `/api/enforce/`. |
 | `IAM_CLIENT_ENFORCE_URL` | unset | Full enforcement endpoint. Takes precedence over `IAM_CLIENT_BASE_URL`. |
+| `IAM_CLIENT_ASSUME_ROLE_URL` | unset | Full assume-role endpoint. Takes precedence over `IAM_CLIENT_BASE_URL`. |
 | `IAM_CLIENT_TIMEOUT_SECONDS` | `5` | Timeout for IAM service calls. |
 | `IAM_CLIENT_SESSION_TOKEN_GETTER` | unset | Dotted function path for custom token lookup. |
 | `IAM_CLIENT_CLASS` | unset | Dotted class path for replacing the service client, usually in tests. |
@@ -62,6 +63,30 @@ and returns the token:
 ```python
 IAM_CLIENT_SESSION_TOKEN_GETTER = "myapp.iam.get_session_token"
 ```
+
+## Assumed Tokens
+
+Use `request.enforce.assume_role()` when an application needs to retrieve a
+token that acts as another principal. The client returns the IAM response and
+does not store or activate the token for the current request.
+
+```python
+def assume_user(request, username):
+    response = request.enforce.assume_role(
+        "user",
+        username,
+        duration_seconds=900,
+    )
+    request.session["assumed_iam_session_token"] = response["token"]
+    return response
+```
+
+The caller's session token must be allowed to perform `iam:AssumeRole` on the
+target principal resource, such as `iam:principal:user:UserB`.
+
+Code that runs outside a middleware-managed request can use
+`IAMServiceClient().assume_role(token, "user", username, duration_seconds=900)`
+directly.
 
 ## Request Enforcement
 

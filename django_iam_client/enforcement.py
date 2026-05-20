@@ -40,6 +40,17 @@ class RequestEnforcement:
     def batch(self):
         return EnforcementBatch(self.request, client=self.client)
 
+    def assume_role(self, principal_type, name, duration_seconds=None):
+        token = get_session_token(self.request)
+        if not token:
+            raise MissingSessionToken("A bearer session token is required.")
+        return self.client.assume_role(
+            token,
+            principal_type,
+            name,
+            duration_seconds=duration_seconds,
+        )
+
     @property
     def reads(self):
         return [operation for operation in self.operations if operation.mode == "read"]
