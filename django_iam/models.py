@@ -127,6 +127,20 @@ class AuditLog(models.Model):
         null=True,
         blank=True,
     )
+    actor_principal = models.ForeignKey(
+        Principal,
+        on_delete=models.SET_NULL,
+        related_name="actor_audit_logs",
+        null=True,
+        blank=True,
+    )
+    actor_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="iam_actor_audit_logs",
+        null=True,
+        blank=True,
+    )
     action = models.CharField(max_length=255)
     resource = models.CharField(max_length=1024)
     context = models.JSONField(default=dict, blank=True)

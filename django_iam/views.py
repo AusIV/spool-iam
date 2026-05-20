@@ -7,14 +7,16 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
-from .enforcement import enforce
+from .enforcement import enforce, get_principal
 from .exceptions import MissingContextValue, PermissionDenied
 from .models import Policy, Principal, PrincipalRole, Role, RolePolicy
 from .tokens import (
     TokenError,
     decode_session_token,
+    get_assume_role_max_ttl_seconds,
     get_public_key,
     get_token_metadata,
+    issue_assumed_session_token,
     issue_session_token,
 )
 
@@ -49,6 +51,80 @@ def authenticate_session(request):
 
 @csrf_exempt
 @require_POST
+def assume_role_session(request):
+    token = _bearer_token(request)
+    if not token:
+        return _error("missing_token", "A session token is required.", status=401)
+
+    auth_request, _payload, response = _auth_request_from_token(token, allow_assumed=False)
+    if response is not None:
+        return response
+
+    data = _read_json(request)
+    if data is None:
+        return _error("invalid_json", "Request body must be valid JSON.", status=400)
+
+    principal_type = data.get("principal_type", Principal.USER)
+    name = data.get("name")
+    if principal_type != Principal.USER:
+        return _error("invalid_principal", "Only user principals are supported.", status=400)
+    if not isinstance(name, str) or not name:
+        return _error("invalid_principal", "name must be a non-empty string.", status=400)
+
+    duration_seconds = data.get("duration_seconds", get_assume_role_max_ttl_seconds())
+    if not isinstance(duration_seconds, int) or isinstance(duration_seconds, bool):
+        return _error("invalid_duration", "duration_seconds must be an integer.", status=400)
+    max_ttl = get_assume_role_max_ttl_seconds()
+    if duration_seconds < 1 or duration_seconds > max_ttl:
+        return _error(
+            "invalid_duration",
+            f"duration_seconds must be between 1 and {max_ttl}.",
+            status=400,
+        )
+
+    response = _authorize_management(
+        auth_request,
+        "iam:AssumeRole",
+        _principal_resource(principal_type, name),
+    )
+    if response is not None:
+        return response
+
+    principal = (
+        Principal.objects.select_related("user")
+        .filter(
+            principal_type=principal_type,
+            name=name,
+            user__is_active=True,
+        )
+        .first()
+    )
+    if principal is None:
+        return _error("not_found", "Principal does not exist.", status=404)
+
+    actor_principal = get_principal(auth_request)
+    if actor_principal is None:
+        return _error("invalid_token", "Token subject has no active principal.", status=401)
+
+    assumed_token = issue_assumed_session_token(
+        auth_request.user,
+        actor_principal,
+        principal,
+        duration_seconds,
+    )
+    return JsonResponse(
+        {
+            "token": assumed_token,
+            "token_type": "Bearer",
+            "expires_in": duration_seconds,
+            "principal": _serialize_principal_identity(principal),
+            "actor": _serialize_principal_identity(actor_principal),
+        }
+    )
+
+
+@csrf_exempt
+@require_POST
 def enforce_batch(request):
     data = _read_json(request)
     if data is None:
@@ -58,24 +134,14 @@ def enforce_batch(request):
     if not token:
         return _error("missing_token", "A session token is required.", status=401)
 
-    try:
-        payload = decode_session_token(token)
-    except TokenError as exc:
-        return _error("invalid_token", str(exc), status=401)
-
-    user = (
-        get_user_model()
-        .objects.filter(pk=payload["sub"], is_active=True)
-        .first()
-    )
-    if user is None:
-        return _error("invalid_token", "Token subject is not an active user.", status=401)
+    auth_request, _payload, response = _auth_request_from_token(token)
+    if response is not None:
+        return response
 
     checks = data.get("checks")
     if not isinstance(checks, list):
         return _error("invalid_checks", "checks must be a list.", status=400)
 
-    auth_request = SimpleNamespace(user=user)
     results = [_evaluate_check(auth_request, check) for check in checks]
     return JsonResponse({"results": results})
 
@@ -590,18 +656,75 @@ def _management_auth_request(request):
     if not token:
         return None, _error("missing_token", "A session token is required.", status=401)
 
+    auth_request, _payload, response = _auth_request_from_token(token)
+    return auth_request, response
+
+
+def _auth_request_from_token(token, allow_assumed=True):
     try:
         payload = decode_session_token(token)
     except TokenError as exc:
-        return None, _error("invalid_token", str(exc), status=401)
+        return None, None, _error("invalid_token", str(exc), status=401)
+
+    token_type = payload.get("typ")
+    if token_type == "assumed_session" and not allow_assumed:
+        return (
+            None,
+            payload,
+            _error(
+                "assumed_token_not_allowed",
+                "Assumed session tokens cannot assume another role.",
+                status=403,
+            ),
+        )
 
     user = get_user_model().objects.filter(pk=payload["sub"], is_active=True).first()
     if user is None:
-        return None, _error(
+        return None, payload, _error(
             "invalid_token", "Token subject is not an active user.", status=401
         )
 
-    return SimpleNamespace(user=user), None
+    auth_request = SimpleNamespace(user=user)
+    if token_type == "assumed_session":
+        principal_claim = payload.get("principal")
+        actor_claim = payload.get("actor")
+        if not isinstance(principal_claim, dict) or not isinstance(actor_claim, dict):
+            return None, payload, _error("invalid_token", "Invalid assumed token.", status=401)
+
+        principal = (
+            Principal.objects.select_related("user")
+            .filter(
+                principal_type=principal_claim.get("type"),
+                name=principal_claim.get("name"),
+                user=user,
+            )
+            .first()
+        )
+        actor_user = (
+            get_user_model()
+            .objects.filter(pk=actor_claim.get("sub"), is_active=True)
+            .first()
+        )
+        actor_principal = None
+        if actor_user is not None:
+            actor_principal = (
+                Principal.objects.select_related("user")
+                .filter(
+                    principal_type=actor_claim.get("principal_type"),
+                    name=actor_claim.get("principal_name"),
+                    user=actor_user,
+                )
+                .first()
+            )
+
+        if principal is None or actor_user is None or actor_principal is None:
+            return None, payload, _error("invalid_token", "Invalid assumed token.", status=401)
+
+        auth_request._django_iam_principal = principal
+        auth_request.iam_actor_user = actor_user
+        auth_request.iam_actor_principal = actor_principal
+
+    return auth_request, payload, None
 
 
 def _authorize_management(auth_request, action, resource):

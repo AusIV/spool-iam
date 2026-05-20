@@ -119,6 +119,7 @@ Optional environment variables:
 | `IAM_JWT_AUDIENCE` | unset | Optional JWT audience. |
 | `IAM_JWT_KEY_ID` | unset | Optional JWT `kid` header value. |
 | `IAM_JWT_TTL_SECONDS` | `3600` | Session token lifetime in seconds. |
+| `IAM_ASSUME_ROLE_MAX_TTL_SECONDS` | `IAM_JWT_TTL_SECONDS` | Maximum lifetime for assumed-role tokens. |
 
 Multiline JWT keys can be provided as normal multiline environment values or with
 newlines escaped as `\n`; the service converts escaped newlines at startup.
@@ -146,6 +147,33 @@ The JWT is signed with RS256 by default and contains only session metadata such
 as issuer, subject user id, issued-at time, expiry, and token type. Applications
 can verify it with the public key, but permission decisions should be made by the
 IAM service.
+
+Assume another principal after authenticating:
+
+```bash
+curl -s http://127.0.0.1:8000/api/session/assume-role/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <jwt>" \
+  -d '{"principal_type":"user","name":"UserB","duration_seconds":900}'
+```
+
+The caller must be allowed to perform `iam:AssumeRole` on the target principal
+resource, for example `iam:principal:user:UserB`. Assumed-role tokens use
+`typ: "assumed_session"`, enforce permissions as the target principal, and carry
+actor claims identifying the original caller. Assumed tokens cannot be used to
+assume another principal.
+
+The response contains:
+
+```json
+{
+  "token": "<jwt>",
+  "token_type": "Bearer",
+  "expires_in": 900,
+  "principal": {"id": 2, "principal_type": "user", "name": "UserB"},
+  "actor": {"id": 1, "principal_type": "user", "name": "alice"}
+}
+```
 
 Batch authorization checks:
 
@@ -256,6 +284,9 @@ enforce(
 `enforce()` returns `True` when authorized. It raises `django_iam.exceptions.PermissionDenied` if no matching allow exists or if any explicit deny matches. It raises `django_iam.exceptions.MissingContextValue` when a matching action statement has a `Resource` template like `{principalName}` and that value is not supplied in `context`.
 
 Every call writes an `AuditLog` row. The cumulative policy for the request principal is cached on the request object for the life of the request.
+For assumed-role tokens, audit rows keep `principal` and `user` as the effective
+target identity and populate `actor_principal` and `actor_user` with the original
+caller.
 
 ## Tests
 

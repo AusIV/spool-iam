@@ -39,6 +39,7 @@ class AuditLogAdmin(admin.ModelAdmin):
     list_display = (
         "created_at",
         "principal",
+        "actor_principal",
         "action",
         "resource",
         "allowed",
@@ -46,10 +47,19 @@ class AuditLogAdmin(admin.ModelAdmin):
         "exported_at",
     )
     list_filter = ("allowed", "reason", "exported_at", "created_at")
-    search_fields = ("principal__name", "user__username", "action", "resource")
+    search_fields = (
+        "principal__name",
+        "user__username",
+        "actor_principal__name",
+        "actor_user__username",
+        "action",
+        "resource",
+    )
     readonly_fields = (
         "principal",
         "user",
+        "actor_principal",
+        "actor_user",
         "action",
         "resource",
         "context",

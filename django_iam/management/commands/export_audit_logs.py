@@ -70,6 +70,8 @@ def _serialize_audit_log(audit_log):
         "id": audit_log.id,
         "principal_id": principal_id,
         "user_id": user_id,
+        "actor_principal_id": audit_log.actor_principal_id,
+        "actor_user_id": audit_log.actor_user_id,
         "action": audit_log.action,
         "resource": audit_log.resource,
         "context": audit_log.context,

@@ -177,6 +177,8 @@ def _write_audit_log(
     AuditLog.objects.create(
         principal=principal,
         user=user,
+        actor_principal=getattr(request, "iam_actor_principal", None),
+        actor_user=getattr(request, "iam_actor_user", None),
         action=action,
         resource=resource,
         context=context,

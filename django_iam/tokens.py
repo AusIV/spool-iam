@@ -16,15 +16,45 @@ class TokenError(Exception):
 
 
 def issue_session_token(user):
+    return _issue_token(user, token_type="session")
+
+
+def issue_assumed_session_token(actor_user, actor_principal, target_principal, duration_seconds):
+    if target_principal.user_id is None:
+        raise ValueError("Target principal must be linked to an active user.")
+
+    claims = {
+        "principal": {
+            "type": target_principal.principal_type,
+            "name": target_principal.name,
+        },
+        "actor": {
+            "sub": str(actor_user.pk),
+            "principal_type": actor_principal.principal_type,
+            "principal_name": actor_principal.name,
+        },
+    }
+    return _issue_token(
+        target_principal.user,
+        token_type="assumed_session",
+        ttl_seconds=duration_seconds,
+        extra_claims=claims,
+    )
+
+
+def _issue_token(user, token_type, ttl_seconds=None, extra_claims=None):
     now = timezone.now()
-    expires_at = now + timedelta(seconds=_get_token_ttl_seconds())
+    expires_at = now + timedelta(seconds=ttl_seconds or _get_token_ttl_seconds())
     payload = {
         "iss": _get_issuer(),
         "sub": str(user.pk),
         "iat": int(now.timestamp()),
         "exp": int(expires_at.timestamp()),
-        "typ": "session",
+        "typ": token_type,
     }
+    if extra_claims:
+        payload.update(extra_claims)
+
     audience = _get_audience()
     if audience:
         payload["aud"] = audience
@@ -55,7 +85,7 @@ def decode_session_token(token):
     except jwt.PyJWTError as exc:
         raise TokenError("Invalid session token.") from exc
 
-    if payload.get("typ") != "session":
+    if payload.get("typ") not in {"session", "assumed_session"}:
         raise TokenError("Invalid session token type.")
 
     return payload
@@ -103,6 +133,10 @@ def _get_audience():
 
 def _get_token_ttl_seconds():
     return getattr(settings, "IAM_JWT_TTL_SECONDS", DEFAULT_TTL_SECONDS)
+
+
+def get_assume_role_max_ttl_seconds():
+    return getattr(settings, "IAM_ASSUME_ROLE_MAX_TTL_SECONDS", _get_token_ttl_seconds())
 
 
 def _get_headers():
