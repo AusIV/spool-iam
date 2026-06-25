@@ -12,7 +12,7 @@ DEFAULT_TIMEOUT_SECONDS = 5
 
 
 class IAMServiceClient:
-    def __init__(self, enforce_url=None, assume_role_url=None, timeout=None):
+    def __init__(self, enforce_url=None, assume_role_url=None, refresh_url=None, timeout=None):
         base_url = getattr(settings, "IAM_CLIENT_BASE_URL", "").rstrip("/")
         self.enforce_url = enforce_url or getattr(settings, "IAM_CLIENT_ENFORCE_URL", None)
         if not self.enforce_url:
@@ -27,10 +27,18 @@ class IAMServiceClient:
         if not self.assume_role_url and base_url:
             self.assume_role_url = f"{base_url}/api/session/assume-role/"
 
-        if not self.enforce_url and not self.assume_role_url:
+        self.refresh_url = refresh_url or getattr(
+            settings,
+            "IAM_CLIENT_REFRESH_URL",
+            None,
+        )
+        if not self.refresh_url and base_url:
+            self.refresh_url = f"{base_url}/api/session/refresh/"
+
+        if not self.enforce_url and not self.assume_role_url and not self.refresh_url:
             raise ImproperlyConfigured(
                 "Configure IAM_CLIENT_BASE_URL, IAM_CLIENT_ENFORCE_URL, "
-                "or IAM_CLIENT_ASSUME_ROLE_URL."
+                "IAM_CLIENT_ASSUME_ROLE_URL, or IAM_CLIENT_REFRESH_URL."
             )
 
         self.timeout = timeout
@@ -130,7 +138,48 @@ class IAMServiceClient:
 
         return response_payload
 
+    def refresh_session(self, refresh_token):
+        if not self.refresh_url:
+            raise ImproperlyConfigured(
+                "Configure IAM_CLIENT_REFRESH_URL or IAM_CLIENT_BASE_URL."
+            )
+
+        body = json.dumps({"refresh_token": refresh_token}).encode("utf-8")
+        request = urllib.request.Request(
+            self.refresh_url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                response_payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise IAMServiceError("IAM service rejected the refresh request.") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise IAMServiceError("IAM service is unavailable.") from exc
+        except json.JSONDecodeError as exc:
+            raise IAMServiceError("IAM service returned invalid JSON.") from exc
+
+        if not isinstance(response_payload.get("token"), str):
+            raise IAMServiceError("IAM service response did not include a token.")
+        if response_payload.get("token_type") != "Bearer":
+            raise IAMServiceError("IAM service response did not include a bearer token.")
+        if not isinstance(response_payload.get("refresh_token"), str):
+            raise IAMServiceError("IAM service response did not include a refresh token.")
+
+        return response_payload
+
 
 def assume_role(token, principal_type, name, duration_seconds=None, client=None):
     client = client or IAMServiceClient()
     return client.assume_role(token, principal_type, name, duration_seconds)
+
+
+def refresh_session(refresh_token, client=None):
+    client = client or IAMServiceClient()
+    return client.refresh_session(refresh_token)

@@ -119,6 +119,9 @@ Optional environment variables:
 | `IAM_JWT_AUDIENCE` | unset | Optional JWT audience. |
 | `IAM_JWT_KEY_ID` | unset | Optional JWT `kid` header value. |
 | `IAM_JWT_TTL_SECONDS` | `3600` | Session token lifetime in seconds. |
+| `IAM_REFRESH_TOKEN_TTL_SECONDS` | `86400` | Refresh token lifetime in seconds. |
+| `IAM_REFRESH_TOKEN_MAX_REFRESHES` | `64` | Number of times a newly authenticated session can be refreshed. |
+| `IAM_REFRESH_TOKEN_HASH_SECRET` | `DJANGO_SECRET_KEY` | Secret used to hash persisted refresh tokens. |
 | `IAM_ASSUME_ROLE_MAX_TTL_SECONDS` | `IAM_JWT_TTL_SECONDS` | Maximum lifetime for assumed-role tokens. |
 
 Multiline JWT keys can be provided as normal multiline environment values or with
@@ -139,14 +142,32 @@ The response contains:
 ```json
 {
   "token": "<jwt>",
-  "token_type": "Bearer"
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "<opaque-refresh-token>",
+  "refresh_token_expires_at": "2026-06-26T12:00:00+00:00",
+  "refreshes_remaining": 64
 }
 ```
 
 The JWT is signed with RS256 by default and contains only session metadata such
-as issuer, subject user id, issued-at time, expiry, and token type. Applications
-can verify it with the public key, but permission decisions should be made by the
-IAM service.
+as issuer, subject user id, issued-at time, expiry, token id, token type, and
+refresh-token family metadata. Applications can verify it with the public key,
+but permission decisions should be made by the IAM service.
+
+Refresh an expired or expiring session with the refresh token:
+
+```bash
+curl -s http://127.0.0.1:8000/api/session/refresh/ \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token":"<opaque-refresh-token>"}'
+```
+
+Refresh tokens are one-time-use credentials. A successful refresh returns a new
+session token and a new refresh token, decreases `refreshes_remaining` by one,
+and sets the new refresh token expiration to now plus the configured refresh
+token lifetime. If a refresh token is reused, the service rejects the request and
+revokes descendant session and refresh tokens in that refresh-token family.
 
 Assume another principal after authenticating:
 

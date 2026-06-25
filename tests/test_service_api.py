@@ -1,9 +1,21 @@
+from datetime import timedelta
+
 import jwt
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
-from django_iam.models import AuditLog, Policy, Principal, PrincipalRole, Role, RolePolicy
+from django_iam.models import (
+    AuditLog,
+    IssuedToken,
+    Policy,
+    Principal,
+    PrincipalRole,
+    RefreshToken,
+    Role,
+    RolePolicy,
+)
 
 
 class ServiceApiTests(TestCase):
@@ -57,6 +69,131 @@ class ServiceApiTests(TestCase):
         )
         assert payload["sub"] == str(self.user.pk)
         assert payload["typ"] == "session"
+        assert payload["jti"]
+        assert payload["family_id"]
+        assert payload["generation"] == 0
+
+        body = response.json()
+        assert body["token_type"] == "Bearer"
+        assert body["expires_in"] == 3600
+        assert isinstance(body["refresh_token"], str)
+        assert body["refresh_token_expires_at"]
+        assert body["refreshes_remaining"] == 64
+
+    @override_settings(IAM_REFRESH_TOKEN_TTL_SECONDS=86400)
+    def test_refresh_rotates_refresh_token_and_decrements_remaining_refreshes(self):
+        auth_body = self.client.post(
+            "/api/session/authenticate/",
+            {"username": "UserC", "password": "password"},
+            content_type="application/json",
+        ).json()
+        original_refresh = RefreshToken.objects.get()
+
+        response = self.client.post(
+            "/api/session/refresh/",
+            {"refresh_token": auth_body["refresh_token"]},
+            content_type="application/json",
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["token"] != auth_body["token"]
+        assert body["refresh_token"] != auth_body["refresh_token"]
+        assert body["refreshes_remaining"] == 63
+        original_refresh.refresh_from_db()
+        next_refresh = RefreshToken.objects.get(generation=1)
+        assert original_refresh.used_at is not None
+        assert next_refresh.family_id == original_refresh.family_id
+        assert next_refresh.parent == original_refresh
+        assert next_refresh.expires_at > timezone.now()
+
+        payload = jwt.decode(
+            body["token"],
+            settings.IAM_JWT_PUBLIC_KEY,
+            algorithms=["RS256"],
+            issuer="django-iam",
+            options={"verify_aud": False},
+        )
+        assert payload["generation"] == 1
+
+    def test_refresh_reuse_revokes_descendant_tokens_only(self):
+        first_body = self.client.post(
+            "/api/session/authenticate/",
+            {"username": "UserC", "password": "password"},
+            content_type="application/json",
+        ).json()
+        second_body = self.client.post(
+            "/api/session/refresh/",
+            {"refresh_token": first_body["refresh_token"]},
+            content_type="application/json",
+        ).json()
+        third_body = self.client.post(
+            "/api/session/refresh/",
+            {"refresh_token": second_body["refresh_token"]},
+            content_type="application/json",
+        ).json()
+
+        response = self.client.post(
+            "/api/session/refresh/",
+            {"refresh_token": second_body["refresh_token"]},
+            content_type="application/json",
+        )
+
+        assert response.status_code == 401
+        assert response.json()["error"] == "refresh_token_reused"
+        assert RefreshToken.objects.get(generation=2).revoked_at is not None
+        assert IssuedToken.objects.get(generation=2).revoked_at is not None
+
+        revoked_response = self.client.post(
+            "/api/enforce/",
+            {"checks": [{"object": "issue:ProjectA:IssueB", "action": "issue:View"}]},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {third_body['token']}",
+        )
+        assert revoked_response.status_code == 401
+        assert revoked_response.json()["error"] == "invalid_token"
+
+        retained_response = self.client.post(
+            "/api/enforce/",
+            {"checks": [{"object": "issue:ProjectA:IssueB", "action": "issue:View"}]},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {second_body['token']}",
+        )
+        assert retained_response.status_code == 200
+
+    def test_refresh_rejects_expired_refresh_token(self):
+        auth_body = self.client.post(
+            "/api/session/authenticate/",
+            {"username": "UserC", "password": "password"},
+            content_type="application/json",
+        ).json()
+        RefreshToken.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
+
+        response = self.client.post(
+            "/api/session/refresh/",
+            {"refresh_token": auth_body["refresh_token"]},
+            content_type="application/json",
+        )
+
+        assert response.status_code == 401
+        assert response.json()["error"] == "refresh_token_expired"
+
+    def test_refresh_rejects_exhausted_refresh_token(self):
+        auth_body = self.client.post(
+            "/api/session/authenticate/",
+            {"username": "UserC", "password": "password"},
+            content_type="application/json",
+        ).json()
+        RefreshToken.objects.update(refreshes_remaining=0)
+
+        response = self.client.post(
+            "/api/session/refresh/",
+            {"refresh_token": auth_body["refresh_token"]},
+            content_type="application/json",
+        )
+
+        assert response.status_code == 401
+        assert response.json()["error"] == "refresh_token_exhausted"
 
     def test_batch_enforce_returns_ordered_decisions(self):
         token = self.client.post(

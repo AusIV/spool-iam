@@ -4,6 +4,7 @@ from . import views
 
 urlpatterns = [
     path("api/session/authenticate/", views.authenticate_session, name="iam-authenticate"),
+    path("api/session/refresh/", views.refresh_session_view, name="iam-refresh-session"),
     path("api/session/assume-role/", views.assume_role_session, name="iam-assume-role"),
     path("api/session/public-key/", views.public_key, name="iam-public-key"),
     path("api/enforce/", views.enforce_batch, name="iam-enforce"),

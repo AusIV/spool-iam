@@ -277,6 +277,7 @@ class IAMClientTests(TestCase):
 
         assert client.enforce_url == "https://iam.example.com/api/enforce/"
         assert client.assume_role_url == "https://iam.example.com/api/session/assume-role/"
+        assert client.refresh_url == "https://iam.example.com/api/session/refresh/"
 
     @override_settings(
         IAM_CLIENT_BASE_URL="https://iam.example.com",
@@ -395,3 +396,58 @@ class IAMClientTests(TestCase):
         with patch("urllib.request.urlopen", fake_urlopen):
             with self.assertRaises(IAMServiceError):
                 client.assume_role("session-token", "user", "Target")
+
+    def test_refresh_session_posts_refresh_token_and_returns_token_payload(self):
+        response_payload = {
+            "token": "session-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "next-refresh-token",
+            "refresh_token_expires_at": "2026-06-26T12:00:00+00:00",
+            "refreshes_remaining": 63,
+        }
+
+        def fake_urlopen(request, timeout):
+            URLLIB_CALLS.append(
+                {
+                    "url": request.full_url,
+                    "method": request.get_method(),
+                    "headers": dict(request.header_items()),
+                    "body": json.loads(request.data.decode("utf-8")),
+                    "timeout": timeout,
+                }
+            )
+            return FakeHTTPResponse(json.dumps(response_payload).encode("utf-8"))
+
+        client = IAMServiceClient(
+            refresh_url="https://iam.example.com/api/session/refresh/",
+            timeout=7,
+        )
+        with patch("urllib.request.urlopen", fake_urlopen):
+            payload = client.refresh_session("refresh-token")
+
+        assert payload == response_payload
+        assert URLLIB_CALLS == [
+            {
+                "url": "https://iam.example.com/api/session/refresh/",
+                "method": "POST",
+                "headers": {
+                    "Content-type": "application/json",
+                    "Accept": "application/json",
+                },
+                "body": {"refresh_token": "refresh-token"},
+                "timeout": 7,
+            }
+        ]
+
+    def test_refresh_session_rejects_malformed_response(self):
+        def fake_urlopen(request, timeout):
+            return FakeHTTPResponse(json.dumps({"token_type": "Bearer"}).encode("utf-8"))
+
+        client = IAMServiceClient(
+            refresh_url="https://iam.example.com/api/session/refresh/"
+        )
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            with self.assertRaises(IAMServiceError):
+                client.refresh_session("refresh-token")

@@ -114,6 +114,63 @@ class PrincipalRole(models.Model):
         return f"{self.principal} -> {self.role}"
 
 
+class RefreshToken(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="iam_refresh_tokens",
+    )
+    token_hash = models.CharField(max_length=64, unique=True)
+    family_id = models.UUIDField(db_index=True)
+    generation = models.PositiveIntegerField()
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        related_name="children",
+        null=True,
+        blank=True,
+    )
+    refreshes_remaining = models.PositiveIntegerField()
+    expires_at = models.DateTimeField(db_index=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["family_id", "generation"],
+                name="django_iam_unique_refresh_family_generation",
+            ),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"refresh:{self.family_id}:{self.generation}"
+
+
+class IssuedToken(models.Model):
+    jti = models.UUIDField(unique=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="iam_issued_tokens",
+    )
+    token_type = models.CharField(max_length=50)
+    subject = models.CharField(max_length=255)
+    family_id = models.UUIDField(db_index=True)
+    generation = models.PositiveIntegerField()
+    expires_at = models.DateTimeField(db_index=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.token_type}:{self.jti}"
+
+
 class AuditLog(models.Model):
     principal = models.ForeignKey(
         Principal,

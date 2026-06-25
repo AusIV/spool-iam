@@ -11,13 +11,15 @@ from .enforcement import enforce, get_principal
 from .exceptions import MissingContextValue, PermissionDenied
 from .models import Policy, Principal, PrincipalRole, Role, RolePolicy
 from .tokens import (
+    RefreshTokenError,
     TokenError,
     decode_session_token,
     get_assume_role_max_ttl_seconds,
     get_public_key,
     get_token_metadata,
     issue_assumed_session_token,
-    issue_session_token,
+    issue_session_pair,
+    refresh_session,
 )
 
 
@@ -46,7 +48,22 @@ def authenticate_session(request):
     if not user.is_active:
         return _error("inactive_user", "User is inactive.", status=403)
 
-    return JsonResponse({"token": issue_session_token(user), "token_type": "Bearer"})
+    return JsonResponse(issue_session_pair(user))
+
+
+@csrf_exempt
+@require_POST
+def refresh_session_view(request):
+    data = _read_json(request)
+    if data is None:
+        return _error("invalid_json", "Request body must be valid JSON.", status=400)
+
+    try:
+        response = refresh_session(data.get("refresh_token"))
+    except RefreshTokenError as exc:
+        return _error(exc.code, exc.message, status=401)
+
+    return JsonResponse(response)
 
 
 @csrf_exempt
@@ -114,6 +131,7 @@ def assume_role_session(request):
         actor_principal,
         principal,
         duration_seconds,
+        source_payload=_payload,
     )
     return JsonResponse(
         {
