@@ -69,6 +69,8 @@ class ServiceApiTests(TestCase):
         )
         assert payload["sub"] == str(self.user.pk)
         assert payload["typ"] == "session"
+        assert payload["username"] == "UserC"
+        assert payload["user"] == {"id": self.user.pk, "username": "UserC"}
         assert payload["jti"]
         assert payload["family_id"]
         assert payload["generation"] == 0
@@ -115,6 +117,8 @@ class ServiceApiTests(TestCase):
             options={"verify_aud": False},
         )
         assert payload["generation"] == 1
+        assert payload["username"] == "UserC"
+        assert payload["user"] == {"id": self.user.pk, "username": "UserC"}
 
     def test_refresh_reuse_revokes_descendant_tokens_only(self):
         first_body = self.client.post(

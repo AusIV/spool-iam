@@ -114,6 +114,13 @@ def issue_session_token(user, refresh_token=None):
     return _issue_token(
         str(user.pk),
         token_type="session",
+        extra_claims={
+            "username": user.get_username(),
+            "user": {
+                "id": user.pk,
+                "username": user.get_username(),
+            },
+        },
         user=user,
         family_id=refresh_token.family_id,
         generation=refresh_token.generation,
